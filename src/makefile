@@ -16,7 +16,7 @@ serwer.o: serwer.cpp
 	$(CPP) $(FLAGS) -std=c++17 -c $< -o $@
 
 serwer: $(OBJ)
-	$(CPP) $^ -o $@
+	$(CPP) $^ -lstdc++fs -o $@
 
 clean:
 	rm -f $(BINARIES) *.o

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <unordered_set>
+#include <unordered_map>
 #include <fstream>
 #include <filesystem>
 #include <regex>
@@ -59,8 +60,8 @@ std::unordered_set<std::string> one_time_headers;
 // `reg` is the regex of type [charset] which defines which ascii characters are ok.
 // `mp` is then used for matching regexes of type [charset]*
 void fill_ascii_map(const std::regex &reg, std::vector<bool> &mp) {
-    for (char c = 0; 0 <= c && c < ASCII; ++c)
-        mp[c] = std::regex_match(std::string(1, c), reg);
+    for (uint8_t c = 0; c < ASCII; ++c)
+        mp[c] = std::regex_match(std::string(1, (char) c), reg);
 }
 
 // Creates ascii_maps to facilitate parsing,
@@ -166,7 +167,7 @@ bool update_if_needed(int sockfd, std::string &str, size_t &i) {
 // If no characters extracted also returns not success (false).
 bool match_charset(int sockfd, std::string &str, size_t &i, const std::vector<bool> &charset, std::string &res) {
     size_t prev_i = i;
-    while (0 <= str[i] && str[i] < ASCII && charset[str[i]]) {
+    while (0 <= str[i] && (unsigned) str[i] < ASCII && charset[str[i]]) {
         try {
             res.push_back(str[i++]);
         } catch (std::exception &e) {
