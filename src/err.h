@@ -5,11 +5,11 @@
 extern "C" {
 #endif /* __cplusplus */
 
-// Prints info about unsuccessful system call and exits.
-extern void syserr(const char *fmt, ...);
+// Print info about unsuccessful system call and exit.
+extern void syserr(const char* fmt, ...);
 
-// Prints error info and exits.
-extern void fatal(const char *fmt, ...);
+// Print error info and exit.
+extern void fatal(const char* fmt, ...);
 
 #ifdef __cplusplus
 }

@@ -1,8 +1,10 @@
-BINARIES = serwer
+BINARIES = server
 CC = gcc
 CPP = g++
-FLAGS = -Wall -Wextra -O2 -g
-OBJ = serwer.o err.o
+FLAGS = -pedantic -Wall -Wextra -Werror -fstack-protector-strong -O2 -g
+RELEASEFLAGS = -O2
+DBGFLAGS = -fstack-protector-strong -g
+OBJ = server.o err.o
 ODIR = obj
 
 .PHONY: all clean
@@ -12,10 +14,10 @@ all: $(BINARIES)
 err.o: err.c err.h
 	$(CC) $(FLAGS) -std=c11 -c $< -o $@
 
-serwer.o: serwer.cpp
+server.o: server.cpp
 	$(CPP) $(FLAGS) -std=c++17 -c $< -o $@
 
-serwer: $(OBJ)
+server: $(OBJ)
 	$(CPP) $^ -lstdc++fs -o $@
 
 clean:
