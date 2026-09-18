@@ -1,11 +1,12 @@
 # HTTP-server
 
-Simplistic HTTP-server with limited functionality written in C/C++
+Simplistic HTTP-server with limited functionality written in C/C++.
 
 ## Introduction
 
 This project implements a narrow subset of HTTP/1.1 specification, with specific
 behavior in case of resources requested by a client which are unavailable.
+Project is written in C/C++ with the use of socket programming.
 
 ## Running
 
@@ -19,14 +20,16 @@ specified in a later [section](#correlated-servers). Argument with a port's
 number is optional, equal to 8080 by default. The server listens to incoming
 connections from clients on this port.
 
-TODO compilation etc
+A `makefile` file is supplied with the project which produces the `server`
+binary. It also includes a `clean` target.
 
 ## Specification
 
 On launch, the server finds a given directory with files and starts waiting for
 incoming TCP connections on a given port. If either opening the directory,
-reading from the directory or opening a network socket does not succeed, the
-server exits with `EXIT_FAILURE` error code.
+reading from the directory, opening the file for correlated servers or opening a
+network socket does not succeed, the server exits with `EXIT_FAILURE` error
+code.
 
 After establishing a connection with a client, the server waits for a client's
 request. The server terminates the connection in case of an incorrect request
@@ -100,108 +103,121 @@ This section contains zero or more lines of the following format:
 header-field = field-name ":" OWS field-value OWS
 ```
 
-gdzie:
+where:
+
+- `field-name` - header's name, case insensitive. All supported header names are
+listed later.
+- `":"` - a single character for colon.
+- `OWS` - zero or more space characters.
+- `field-value` - appropriate value for the header in the HTTP protocol.
+
+#### `message-body`
 
 ```text
-ields-name - jest nazwą nagłówka, nieczułą na wielkość liter. W dalszej części zostaną wymienione nagłówki obsługiwane przez naszą implementację serwera.
-":" - oznacza literalnie znak dwukropka.
-OWS - oznacza dowolną liczbę znaków spacji (w szczególności także brak znaku spacji).
-field-value - jest wartością nagłówka zdefiniowaną adekwatnie dla każdego z dozwolonych nagłówków protokołu HTTP. W dalszej części treści zostaną opisane także oczekiwane wartości i znaczenie nagłówków.
+[ message-body ]
 ```
 
-Przypomnienie: Po wysłaniu wszystkich nagłówków należy zawsze zakończyć tę sekcję znakami CRLF (patrz: Format komunikacji).
-Treść komunikatu - message-body
+Existence of the message body should be determined by the existence of the
+`Content-Length` header beforehand.
 
-Ostatnim elementem w zdefiniowanym formacie komunikatów, wymienianych pomiędzy serwerem a klientem, jest ich treść (ciało):
+### Server resources
+
+The server uses a given directory path as a place to look for resources
+requested by clients. Any addition/removal/modification of files is respected by
+the server during its function. The server expects that requests for resources
+start with the "/" character, which means the search starts at the root (the
+directory path parameter at the server's startup). Next occurences of "/" are
+treated as directory separators on the requested resource's path.
+
+### Error handling
+
+The following are codes (`status-code`) returned by the server:
+
+- `200` - the request was executed successfully.
+- `302` - requested by the client's resource has been temporarily moved to a
+different location. This code is used for the extension of the protocol
+implemented in this project, explained in the
+[correlated servers](#correlated-servers) section.
+- `400` - this code is sent always and only in cases where client's requests
+do not conform to the specification.
+- `404` - requested resource was not found. This code is sent when the logic in
+[correlated servers](#correlated-servers) extension was taken into account.
+- `500` - this code reflects an error in the server's function which was not the
+client's fault.
+- `501` - this code is sent when a client's request is outside of the server's
+implementation. In particular, this concerns all methods other than `GET` and
+`HEAD`.
+
+Note, that in this project, described above status codes are only a section of
+codes defined by the HTTP standard and are not implemented entirely consistently
+with HTTP error semantics (e.g. the server does not return message body for 4xx
+codes, which is not correct per RFC7231).
+
+### Headers
+
+The following values for `field-name` are supported:
+
+- `Connection` - by default, a connection between a client and the server is
+alive as long as the client does not terminate it or the server does not decide
+the client is idle. Client can send multiple messages to the server using the
+connection and expect server's answers for every message. `Connection` header
+with a value of `close` allows to close the TCP connection, after receiving an
+answer from the server to this message.
+- `Content-Type` - describes the type of content in the body of a given HTTP
+message. This implementation simply uses the value of
+`application/octet-stream`.
+- `Content-Length` - a non-negative integer which describes the length of a
+given HTTP message's body. This is a required header for any message from the
+server which contains a body.
+- `Server` - optional parameter which the server may include in every message
+sent to a client which identifies the server's implementation or name.
+
+Other headers not listed are ignored. When more than one line of a supported
+header is found with the same `field-name` value, the server treats the request
+as incorrect.
+
+### Supported methods
+
+The following methods are supported:
+
+- `GET` - try to find the specified resource and return its contents. If the
+resources could not be found, proceed as described in the
+[correlated servers](#correlated-servers) section.
+- `HEAD` - reply the same way as if this were a `GET` method, except without any
+message body. In particular, the headers should still be the same.
+
+### Correlated servers
+
+The file with correlated servers should have the following structure:
 
 ```text
-                  [ message-body ]
+resource TAB server TAB port
 ```
 
-Występowanie treści w komunikacie determinuje wystąpienie wcześniej nagłówka Content-Length. Ponieważ w założeniu nasza implementacja obsługuje tylko metody GET i HEAD, to nasz serwer ma prawo z góry odrzucać wszystkie komunikaty klienta, które zawierają ciało komunikatu. Odrzucenie żądania klienta powinno skutkować wysłaniem przez serwer wiadomości z błędem numer 400.
+where:
 
-Natomiast nasz serwer wysyłając treść komunikatu musi wysłać także nagłówek Content-length z odpowiednią wartością, szczegóły w dalszej części treści niniejszego zadania.
-Zasoby serwera
+- `resource` - absolute path of a file,
+- `TAB` - tab character,
+- `server` - IP 4 address of a server, which contains the given resource,
+- `port` - port's number of the given server, on which it listens to incoming
+connections.
 
-Nasz serwer podczas startu powinien odczytać obowiązkowy parametr z nazwą katalogu i używać wskazanego katalogu jako miejsca, z którego rozpocznie przeszukiwanie wskazywanych przez klientów zasobów. Nasz serwer traktuje wszystkie identyfikatory zasobów wskazywane przez klientów jako nazwy plików we wskazanym katalogu. Nasz serwer powinien odnajdywać w trakcie swojego działania także pliki, które zostały dodane/usunięte/zmodyfikowane po chwili uruchomienia serwera.
-
-Serwer może założyć, że żądania klientów o zasoby powinny zawsze rozpoczynać się od znaku “/”, który jednocześnie wskazuje nam iż rozpoczynamy poszukiwania pliku od korzenia jakim jest katalog przekazany w parametrze podczas uruchomienia naszego serwera. Jeśli zapytanie klienta nie spełnia tego założenie, to serwer powinien odpowiedzieć błędem o numerze 400.
-
-Serwer powinien traktować kolejne wystąpienia znaku “/”, w identyfikatorze zasobu (request-target), jako znak oddzielający poszczególne nazwy katalogów w ścieżce do pliku. Serwer powinien próbować odnaleźć plik zgodnie ze ścieżką otrzymaną od klienta w identyfikatorze zasobu. W przypadku gdy plik nie zostanie odnaleziony, bądź plik nie jest plikiem zwykłym, do którego serwer ma uprawnienia odczytu, to serwer powinien zachować się zgodnie z wymaganiem opisanym w dalszej części treści zadania ( Skorelowane serwery HTTP).
-Obsługa błędów
-
-Nasz serwer powinien w miarę możliwości zawsze wysłać komunikat zwrotny do klienta. Komunikat powinien informować klienta o statusie przetworzenia jego żądania. Sewer powinien zwracać następujące kody (status-code):
+If the search for a requested by a client resource failed in the file directory,
+the server searches for a correlated server that contains the requested
+resource. If such server is not found, then `404` is sent, otherwise `302` is
+sent with the `Location` header, which value is the textual address HTTP of the
+server which contains the requested resource. If a given resource is repeated
+in the file, the first entry has priority. New address is constructed the
+following way:
 
 ```text
-200 - ten kod informuje klienta, że jego żądanie zostało w pełni i poprawnie wykonane przez nasz serwer. Ten kod używamy w szczególności kiedy przesyłamy do klienta zawartość szukanego przez klienta pliku.
-302 - ten kod oznacza, że szukany przez klienta zasób został tymczasowo przeniesiony pod inną lokalizację. Tego kodu użyjemy do implementacji nietypowego rozszerzenia naszego serwera, opisanym w dalszej części treści zadania (Skorelowane serwery HTTP).
-400 - ten kod nasz serwer powinien wysłać zawsze, i tylko w przypadku, kiedy żądanie serwera nie spełnia oczekiwanego formatu, bądź zawiera elementy, które treść zadania wykluczyła jako akceptowane.
-404 - ten kod informuje klienta, że żądany przez niego zasób nie został odnaleziony. Nasz serwer powinien wysyłać ten błąd w przypadku nieodnalezienia żądanego przez klienta pliku - z uwzględnieniem jednak dodatkowej logiki opisanej w dalszej części treści zadania (Skorelowane serwery HTTP).
-500 - ten kod reprezentuje błąd po stronie naszego serwera w przetwarzaniu żądania klienta. Błąd ten serwer może, i powinien, wysłać do klienta w przypadku problemów występujących po stronie z serwera nie wynikających z błędu po stronie klienta. Ten kod błędu oznacza generyczny błąd pracy serwera.
-501 - ten kod błędu serwer może zwrócić w przypadku żądań klienta wykraczających poza skromny zakres implementacji naszego serwera. Dla przykładu wszystkie żądania z metodami różnymi od GET i HEAD. Kod ten informuje klienta, że serwer nie zaimplementował obsługi otrzymanego żądania.
+PROT server COLON port resource
 ```
 
-Zwracamy uwagę, iż opisane powyżej kody błędów stanowią jedynie wycinek zdefiniowanych błędów standardu HTTP oraz nie pokrywają się dokładnie z poprawną semantyką błędów HTTP (dla przykładu nasz serwer w przypadku błędów 4xx nie zwraca żadnego ciała odpowiedzi, co nie jest zgodne z RFC7231). Zabieg ten pozwolił uprościć implementację zadania, ale student powinien pamiętać, iż niniejsze zadanie w żadnej mierze nie stanowi choćby wycinka referencyjnej implementacji poprawnego serwera protokołu HTTP. Podczas implementacji niniejszego zadania należy postępować zgodnie z zaprezentowaną treścią, a w przypadku wątpliwości zadać pytanie prowadzącym przedmiot. W przyszłości w celu poprawnej implementacji serwera HTTP należy postępować zgodnie z dokumentacją RFC odpowiednią dla implementowanej wersji protokołu HTTP.
-Obsługiwane nagłówki
+where:
 
-Nasz serwer powinien obsługiwać co najmniej nagłówki o następujących wartościach field-name:
-
-```text
-Connection - domyślnie połączenie nawiązane przez klienta powinno pozostać otwarte tak długo jak klient nie rozłączy się albo nasz serwer nie uzna danego klienta za bezczynnego i nie zakończy połączenia. Klient w ramach jednego połączenie może przesłać do serwera więcej niż jeden komunikat i oczekiwać odpowiedzi serwera na każdy z wysłanych komunikatów. Odpowiedzi serwera powinny następować w kolejności odpowiadającej przychodzącym żądaniom klienta. Nagłówek Connection ustawiony z wartością close pozwala zakończyć połączenie TCP po komunikacie odpowiedzi wysłanej przez serwer, następującej po komunikacie zawierającym wspomniany nagłówek ze wskazaną wartością. Zatem jeśli klient wyśle komunikat żądania z nagłówkiem Connection: close, to serwer powinien zakończyć połączenie po wysłaniu komunikatu odpowiedzi. Serwer sam również może zakończyć połączenie, dodając nagłówek Connection: close do swojej odpowiedzi, choć nasz serwer nie powinien się tak zachowywać bez uzasadnionego powodu.
-Content-Type - jest nagłówkiem opisującym jakiego rodzaju dane przesyłamy w treści (ciele) komunikatu HTTP. Dzięki wartości tego nagłówka serwer może poinformować klienta czy otrzymany przez niego zasób jest obrazem, tekstem, stroną html, plikiem PDF, etc. Implementacja zadania może zawsze określać wysyłane pliki z serwera jako strumień bajtów application/octet-stream.
-Content-Length - wartość tego nagłówka, wyrażona nieujemną liczbą całkowitą, określa długość treści (ciała) komunikatu HTTP. Wartość tego nagłówka jest wymagana w każdej odpowiedzi z serwera, która zawiera treść (ciało). Wartość tego nagłówka określa wyłącznie liczbę oktetów treści (ciała) komunikatu HTTP. Serwer powinien obsługiwać omawiany nagłówek także w komunikatach wysyłanych przez klienta.
-Server - jest to parametr opcjonalny jaki serwer może umieszczać w każdym komunikacie wysyłanym do klienta. Wartością tego nagłówka może być dowolny napis indentyfikujący implementację serwera, jego nazwę.
-```
-
-Nagłówki nie wymienione powyżej, a otrzymane w komunikacie od klienta ignorujemy.
-
-W przypadku wystąpienia więcej niż jednej linii nagłówka o tej samej wartości field-name, serwer powinien potraktować takie żądanie jako niepoprawne i odpowiedzieć statusem o numerze 400.
-Obsługiwane metody
-
-Nasz serwer powinien obsługiwać minimum dwie następujące metody:
-
-```text
-GET - w przypadku otrzymania żądania od klienta z tą metodą, serwer powinien podjąć próbę odnalezienia wskazanego zasobu (pliku) w katalogu jaki został przekazany jako parametr przy uruchomieniu programu. Jeśli plik zostanie odnaleziony, to serwer powinien zwrócić zawartość tego pliku poprzez wysłanie odpowiedniego komunikatu HTTP z treścią (ciałem) uzupełnionym oktetami odpowiadającymi bajtom odczytanym z pliku. Serwer powinien ustawić typ zwracanego pliku w nagłówku Content-Type. Dla uproszczenia implementacji serwer może użyć wartości application/octet-stream dla dowolnego pliku.
-Jeśli plik nie zostanie odnaleziony na serwerze, to serwer powinien zachować się zgodnie z wymaganiem opisanym w dalszej części treści ( Skorelowane serwery HTTP).
-HEAD - w przypadku otrzymania żądania z tą metodą, serwer powinien odpowiedzieć dokładnie takim samym komunikatem jak gdyby otrzymał żądanie z metodą GET, z tą różnicą, że serwer przesyła komunikat bez treści (ciała). Odpowiedź serwera na żądanie HEAD powinna być taka sama jaką otrzymałby klient wykonując metodę GET na wskazanym zasobie, w szczególności nagłówki także powinny zostać zwrócone przez serwer takie same jak w przypadku metody GET.
-```
-
-## Correlated servers
-
-Implementacja serwera powinna przyjmować obowiązkowy parametr wejściowy wskazujący (ścieżką bezwzględną bądź względną) na plik tekstowy o strukturze:
-
-zasób TAB serwer TAB port
-
-gdzie:
-
-```text
-zasób - to bezwzględna ścieżka do pliku.
-TAB - znak tabulacji.
-serwer - to adres IP serwera, na którym wskazany zasób się znajduje. Adres jest adresem IP w wersji 4.
-port - to numer portu, na którym serwer nasłuchuje na połączenia.
-```
-
-Serwer powinien odszukać plik na podstawie ścieżki bezwzględnej bądź ścieżki względnej w aktualnym katalogu roboczym. Jeśli plik nie zostanie odnaleziony, bądź nie możliwe było jego odczytanie, to serwer powinien zakończyć swoje działanie z kodem błędu EXIT_FAILURE. Implementacja serwera może założyć, że wczytywany plik posiada poprawną strukturę, zgodną z zadaną w niniejszej treści zadania, a plik pusty także jest poprawnym plikiem. Implementacja serwera powinna odczytać zawartość pliku i w przypadku otrzymania od klienta żądania HTTP dotyczącego zasobu, którego serwer nie znalazł w plikach zlokalizowanych lokalnie, powinien przeszukać wczytaną z pliku tablicę i odszukać żądany przez klienta zasób. Jeśli zasób nie występuje także we wczytanej tablicy, to serwer powinien odpowiedzieć statusem o numerze 404 do klienta. Jeśli jednak zasób znajduje się na liście, to serwer powinien wysłać odpowiedź do klienta ze statusem numer 302 oraz ustawionym nagłówkiem Location, którego wartość powinna być tekstem reprezentującym adres HTTP do serwera zawierającego szukany zasób. Jeśli szukany zasób występuje więcej niż raz w tablicy wczytanej z pliku, to serwer powinien skorzystać z pierwszego wpisu występującego najwcześniej w pliku. Konstruowanie nowego adres szukanego zasobu należy wykonać następującego:
-
-PROT serwer COLON port zasób
-
-gdzie:
-
-```text
-PROT - to napis http://.
-serwer - to adres IP serwera, odczytany z pliku.
-COLON - to znak dwukropka.
-port - to numer portu, odczytany z pliku.
-zasób - to bezwzględna ścieżka do zasobu (zaczynająca się od znaku slash /).
-```
-
-Dodatkowe wymagania
-
-Katalog z rozwiązaniem powinien zawierać pliki źródłowe oraz plik Makefile zapewniający automatyczną kompilację i linkowanie. Po wywołaniu komendy "make", na serwerze students, program musi się poprawnie kompilować. Do komunikacji sieciowej należy używać wyłącznie omawianego na zajęciach mechanizmu gniazd z biblioteki standardowej.
-Format rozwiązania:
-
-Jako rozwiązanie należy wysłać poprzez moodle plik ab123456.tar.gz, gdzie ab123456 to login na students. W wysłanym powinien znaleźć się katalog ab123456 zawierający pliki źródłowe i plik Makefile.
-
-We wspomnianym katalogu proszę nie umieszczać plików binarnych ani żadnych plików pośrednich powstających podczas kompilacji. W wyniku wykonania polecenia make powinien powstać plik wykonywalny: serwer.
-
-Ponadto Makefile powinien obsługiwać cel (target) 'clean', który po wywołaniu kasuje wszystkie pliki powstałe podczas kompilacji.
+- `PROT` - `http://` string,
+- `server` - IP address of the server taken from the file,
+- `COLON` - colon character,
+- `port` - port number taken from the file,
+- `resource` - absolute path to the resource, starts with "/".
