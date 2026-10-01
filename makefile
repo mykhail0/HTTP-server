@@ -1,27 +1,24 @@
-CC = gcc
-CPP = g++
-FLAGS = -pedantic -Wall -Wextra -Werror
-RELEASEFLAGS = -O2
+CXXFLAGS = -pedantic -Wall -Wextra -Werror -O2
 DBGFLAGS = -fstack-protector-strong -g
-OBJ = $(BUILDDIR)/server.o $(BUILDDIR)/err.o
+OBJ = $(BUILDDIR)/server.o $(BUILDDIR)/parameters.o
 SRCDIR = src
 BUILDDIR = build
 
-.PHONY: all clean
+.PHONY: all clean test
 
 all: $(BUILDDIR)/server
 	cp $< serwer
 
-$(BUILDDIR)/err.o: $(SRCDIR)/err.c $(SRCDIR)/err.h
+$(BUILDDIR)/parameters.o: $(SRCDIR)/parameters.cpp $(SRCDIR)/parameters.hpp $(SRCDIR)/exceptions.hpp
 	mkdir -p $(BUILDDIR)
-	$(CC) $(FLAGS) -std=c11 -c $< -o $@
+	$(CXX) $(CXXFLAGS) -std=c++17 -c $< -o $@
 
-$(BUILDDIR)/server.o: $(SRCDIR)/server.cpp
+$(BUILDDIR)/server.o: $(SRCDIR)/server.cpp $(SRCDIR)/exceptions.hpp
 	mkdir -p $(BUILDDIR)
-	$(CPP) $(FLAGS) -std=c++17 -c $< -o $@
+	$(CXX) $(CXXFLAGS) -std=c++17 -c $< -o $@
 
 $(BUILDDIR)/server: $(OBJ)
-	$(CPP) $^ -lstdc++fs -o $@
+	$(CXX) $^ -lstdc++fs -o $@
 
 clean:
 	rm -f serwer

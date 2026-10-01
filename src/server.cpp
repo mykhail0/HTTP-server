@@ -1,31 +1,48 @@
-#include <fcntl.h>
-#include <netdb.h>
 #include <signal.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <regex>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "err.h"
-
-// Helper type for server:port pairs in resource file.
-using address_t = std::pair<std::string, std::string>;
+#include "exceptions.hpp"
+#include "parameters.hpp"
 
 // HTTP status codes.
-constexpr int OK = 200, FOUND = 302, BAD_REQUEST = 400, NOT_FOUND = 404,
-              INTERNAL_SERVER_ERROR = 500, NOT_IMPLEMENTED = 501;
+enum class status_code {
+  OK = 200,
+  FOUND = 302,
+  BAD_REQUEST = 400,
+  NOT_FOUND = 404,
+  INTERNAL_SERVER_ERROR = 500,
+  NOT_IMPLEMENTED = 501
+};
 
-// Map for info in resource file.
-std::unordered_map<int, std::string> status_messages;
+static constexpr std::string_view code_string_view(status_code status) {
+  switch (status) {
+    case status_code::OK:
+      return "OK";
+    case status_code::FOUND:
+      return "Found";
+    case status_code::BAD_REQUEST:
+      return "Bad Request";
+    case status_code::NOT_FOUND:
+      return "Not Found";
+    case status_code::INTERNAL_SERVER_ERROR:
+      return "Internal Server Error";
+    case status_code::NOT_IMPLEMENTED:
+      return "Not Implemented";
+    default:
+      throw std::invalid_argument("Unknown status code");
+  }
+}
 
 // Timeouts for connection with client.
 constexpr int RECV_TIMEOUT = 3600, SEND_TIMEOUT = 3600;
@@ -70,68 +87,6 @@ void prepare_for_exchange() {
   std::vector<std::string> one_timers{"connection", "content-type",
                                       "content-length", "server"};
   for (auto& s : one_timers) one_time_headers.insert(s);
-
-  status_messages[OK] = "OK";
-  status_messages[FOUND] = "Found";
-  status_messages[BAD_REQUEST] = "Bad Request";
-  status_messages[NOT_FOUND] = "Not Found";
-  status_messages[INTERNAL_SERVER_ERROR] = "Internal Server Error";
-  status_messages[NOT_IMPLEMENTED] = "Not Implemented";
-}
-
-// Closes the file descriptor with the error message if needed.
-void close_err(int fd) {
-  if (close(fd) != 0) perror("close");
-}
-
-// Returns a socket file descriptor the newly setup server is listening to.
-int setup_server(const char* port_num) {
-  int listener_fd, bind_status, yes = 1;
-  listener_fd = bind_status = -1;
-
-  addrinfo hints, *addr_list;
-  memset(&hints, 0, sizeof hints);
-  // TCP/(IPv4|IPv6)
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
-
-  if (getaddrinfo(nullptr, port_num, &hints, &addr_list) != 0)
-    syserr("getaddrinfo");
-
-  for (addrinfo* addr_ptr = addr_list; addr_ptr != nullptr;
-       addr_ptr = addr_ptr->ai_next) {
-    if ((listener_fd = socket(addr_ptr->ai_family, addr_ptr->ai_socktype,
-                              addr_ptr->ai_protocol)) < 0) {
-      perror("socket");
-      continue;
-    }
-
-    // For socket reusability.
-    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) !=
-        0) {
-      perror("setsockopt");
-      close_err(listener_fd);
-      continue;
-    }
-
-    if ((bind_status =
-             bind(listener_fd, addr_ptr->ai_addr, addr_ptr->ai_addrlen)) < 0) {
-      perror("bind");
-      close_err(listener_fd);
-      continue;
-    }
-
-    break;
-  }
-
-  freeaddrinfo(addr_list);
-
-  if (listener_fd < 0 || bind_status < 0) fatal("Valid socket not found.\n");
-
-  if (listen(listener_fd, BACKLOG) < 0) syserr("listen");
-
-  return listener_fd;
 }
 
 // Wraps recv(). Receives data into the string `str`,
@@ -255,25 +210,37 @@ bool parse_headers(int sockfd, std::string& str, size_t& i,
   return true;
 }
 
-// Sends status with len content-length and additional headers. No message.
-bool send_status(int sockfd, int status, size_t len,
-                 const std::string& additional_headers) {
+bool full_send(int sockfd, const char* s, size_t size) {
   size_t sent = 0;
   ssize_t length;
-  std::string s = "HTTP/1.1 " + std::to_string(status) + " " +
-                  status_messages[status] + "\r\n" +
-                  "content-length: " + std::to_string(len) + "\r\n" +
-                  additional_headers + "\r\n";
-  const char* str = s.c_str();
   do {
-    length = send(sockfd, str + sent, s.size() - sent, 0);
+    if (-1 == (length = send(sockfd, s + sent, size - sent, MSG_NOSIGNAL))) {
+      if (errno == EINTR) {
+        // If interrupted by a signal, try again.
+        continue;
+      }
+      perror("send");
+      return false;
+    }
     sent += length;
-  } while (length != -1 && sent < s.size());
-  if (length == -1) {
-    perror("send");
-    return false;
-  }
+  } while (sent < size);
   return true;
+}
+
+// Sends status with len content-length and additional headers. No message.
+bool send_status(int sockfd, status_code status, size_t len,
+                 const std::string& additional_headers) {
+  // Could also compute expected length for s.reserve to preallocate.
+  std::string s("HTTP/1.1 ");
+  s.append(std::to_string(static_cast<int>(status)))
+      .append(" ")
+      .append(code_string_view(status))
+      .append("\r\ncontent-length: ")
+      .append(std::to_string(len))
+      .append("\r\n")
+      .append(additional_headers)
+      .append("\r\n");
+  return full_send(sockfd, s.c_str(), s.size());
 }
 
 // Validates if path doesn't go outside the scope and if contains good
@@ -313,14 +280,7 @@ bool send_file(std::ifstream& ifs, size_t sz, int sockfd) {
     }
     size_t delta = ifs.gcount();
 
-    size_t sent = 0;
-    ssize_t length;
-    do {
-      length = send(sockfd, buffer + was_read_locally + sent, delta - sent, 0);
-      sent += length;
-    } while (length != -1 && sent < delta);
-    if (length == -1) {
-      perror("send file");
+    if (not full_send(sockfd, buffer + was_read_locally, delta)) {
       return false;
     }
     was_read_locally += delta;
@@ -349,7 +309,8 @@ bool process_request(
     }
     std::ifstream res_ifs(resource_str);
     if ((opened_successfully = (opened_successfully && res_ifs.is_open()))) {
-      if (!send_status(sockfd, OK, len, addit_header)) return false;
+      if (!send_status(sockfd, status_code::OK, len, addit_header))
+        return false;
       if (method_str == "HEAD") return true;
       return send_file(res_ifs, len, sockfd);
     }
@@ -362,14 +323,15 @@ bool process_request(
     if (it != addresses.end()) {
       auto& [server, port] = it->second;
       std::string address = "http://" + server + ":" + port + as_read_res;
-      if (!send_status(sockfd, FOUND, 0,
+      if (!send_status(sockfd, status_code::FOUND, 0,
                        "location: " + address + "\r\n" + addit_header))
         return false;
       return true;
     }
   }
 
-  if (!send_status(sockfd, NOT_FOUND, 0, addit_header)) return false;
+  if (!send_status(sockfd, status_code::NOT_FOUND, 0, addit_header))
+    return false;
   return true;
 }
 
@@ -383,16 +345,16 @@ void talk_to_client(
   while (not close_connection) {
     std::string method_str, resource_str;
     if (!parse_request_line(sockfd, str, i, method_str, resource_str)) {
-      send_status(sockfd, BAD_REQUEST, 0, "connection: close\r\n");
+      send_status(sockfd, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
     bool req = true;
     if (method_str != "GET" && method_str != "HEAD") {
-      if (!send_status(sockfd, NOT_IMPLEMENTED, 0, "")) break;
+      if (!send_status(sockfd, status_code::NOT_IMPLEMENTED, 0, "")) break;
       req = false;
     }
     if (!parse_headers(sockfd, str, i, close_connection)) {
-      send_status(sockfd, BAD_REQUEST, 0, "connection: close\r\n");
+      send_status(sockfd, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
 
@@ -445,73 +407,20 @@ int run_server(int listener_fd, std::string& path,
   }
 }
 
-// Ignore SIGPIPE.
-void block_signals() {
-  struct sigaction action;
-  sigset_t set, block_mask;
-  if (sigemptyset(&set) == -1) syserr("sigemptyset");
-  if (sigaddset(&set, SIGPIPE) == -1) syserr("sigaddset");
-  if (sigemptyset(&block_mask) == -1) syserr("sigemptyset");
-  action.sa_handler = SIG_IGN;
-  action.sa_mask = block_mask;
-  action.sa_flags = 0;
-  if (sigaction(SIGPIPE, &action, NULL) == -1) syserr("sigaction");
-}
-
 int main(int argc, char* argv[]) {
-  if (argc != 3 && argc != 4) fatal("Invalid number of arguments.\n");
-
-  // Check if port number is OK.
-  std::string port_num("8080");
-  if (argc == 4) {
-    port_num = argv[3];
-    if (port_num.empty()) {
-      port_num = "8080";
-    } else {
-      if (port_num.front() == '0') {
-        if (port_num.size() != 1) fatal("Leading zeroes in port number.\n");
-      } else {
-        size_t pt = port_num.find_first_not_of("0123456789");
-        if (port_num.size() > 5 || pt != std::string::npos ||
-            stol(port_num) > UINT16_MAX)
-          fatal("Invalid port number.\n");
-      }
-    }
-  }
-
-  // Check if directory is OK.
-  if (faccessat(AT_FDCWD, argv[1], R_OK, AT_EACCESS) != 0)
-    syserr("Cannot open directory.");
   try {
-    if (not std::filesystem::is_directory(argv[1]))
-      fatal("Is not a directory.");
-  } catch (std::exception& e) {
-    syserr(e.what());
+    server_parameters_t params(argc, argv);
+    socket sock(params.port_num.c_str());
+    prepare_for_exchange();
+    run_server(sock.sockfd, params.path, params.correlated_servers);
+  } catch (const server_parameter_error& e) {
+    std::cerr << "Startup Error: " << e.what() << '\n';
+    return EXIT_FAILURE;
+  } catch (const std::filesystem::filesystem_error& e) {
+    // Lacking read permissions on the directory.
+    std::cerr << "Filesystem Error: " << e.what() << '\n';
+    return EXIT_FAILURE;
   }
 
-  // Check if resource file is OK.
-  std::unordered_map<std::string, address_t> addresses;
-  {
-    std::ifstream res_ifs(argv[2]);
-    if (not res_ifs.is_open()) syserr("Resource file not opened.");
-
-    // Specification says that correctness of the file can be assumed.
-    std::string line;
-    while (std::getline(res_ifs, line)) {
-      std::istringstream iss(line);
-      std::string resource;
-      address_t addr;
-      iss >> resource >> addr.first >> addr.second;
-      auto it = addresses.find(resource);
-      if (it == addresses.end()) addresses[resource] = addr;
-    }
-    if (res_ifs.bad()) syserr("Error while reading resource file.");
-  }
-
-  block_signals();
-  int sockfd = setup_server(port_num.c_str());
-  prepare_for_exchange();
-  std::string path(argv[1]);
-  run_server(sockfd, path, addresses);
-  close_err(sockfd);
+  return EXIT_SUCCESS;
 }
