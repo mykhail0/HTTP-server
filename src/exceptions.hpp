@@ -2,32 +2,41 @@
 #define EXCEPTIONS_H
 
 #include <exception>
+#include <stdexcept>
 
-// TODO add more string information for getaddrinfo failure
-class socket_error : public std::exception {
+class socket_error : public std::runtime_error {
  public:
-  enum class kind { getaddrinfo_fail, listen_fail, no_socket_found };
+  enum class kind { getaddrinfo_fail, no_socket_found, uninitialized_socket };
 
  private:
   kind error_kind_;
+  static std::string format_message(kind ec, const std::string& detail) {
+    std::string msg;
+    switch (ec) {
+      case kind::getaddrinfo_fail:
+        msg = "Failed getaddrinfo() call";
+        break;
+      case kind::no_socket_found:
+        msg = "Was not able to find a viable socket";
+        break;
+      case kind::uninitialized_socket:
+        msg = "Trying to use -1 socket";
+        break;
+      default:
+        msg = "Unknown socket error";
+        break;
+    }
+    if (not detail.empty()) {
+      msg.append(": ").append(detail);
+    }
+    return msg;
+  }
 
  public:
-  explicit socket_error(kind ec) noexcept : error_kind_(ec) {}
+  explicit socket_error(kind ec, const std::string& detail = "")
+      : std::runtime_error(format_message(ec, detail)), error_kind_(ec) {}
 
   kind get_kind() const noexcept { return error_kind_; }
-
-  const char* what() const noexcept override {
-    switch (error_kind_) {
-      case kind::getaddrinfo_fail:
-        return "Failed getaddrinfo() call.";
-      case kind::listen_fail:
-        return "Failed listen() call.";
-      case kind::no_socket_found:
-        return "Was not able to find a viable socket.";
-      default:
-        return "Unknown socket error.";
-    }
-  }
 };
 
 class server_parameter_error : public std::exception {
@@ -36,7 +45,8 @@ class server_parameter_error : public std::exception {
     invalid_argument_count,
     invalid_port_format,
     port_out_of_range,
-    invalid_directory,
+    not_directory,
+    not_readable_directory,
     resource_file_unopened,
     resource_file_read_error
   };
@@ -57,8 +67,8 @@ class server_parameter_error : public std::exception {
         return "Invalid port number format or trailing characters.";
       case kind::port_out_of_range:
         return "Port number out of range for uint16_t.";
-      case kind::invalid_directory:
-        return "Target path is not a valid directory.";
+      case kind::not_directory:
+        return "Target path is not a directory.";
       case kind::resource_file_unopened:
         return "Failed to open the correlated servers file.";
       case kind::resource_file_read_error:

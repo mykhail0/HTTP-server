@@ -1,5 +1,9 @@
 #include "parameters.hpp"
 
+// For faccessat:
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <charconv>
 #include <filesystem>
 #include <fstream>
@@ -57,27 +61,27 @@ std::unordered_map<std::string, address_t> parse_correlated_servers(
   }
   return correlated_servers;
 }
+
+std::filesystem::path validate_path(char* path_c_str) {
+  std::filesystem::path path(path_c_str);
+  if (not std::filesystem::is_directory(path)) {
+    throw server_parameter_error(server_parameter_error::kind::not_directory);
+  }
+  if (faccessat(AT_FDCWD, path.c_str(), R_OK, AT_EACCESS) != 0) {
+    throw server_parameter_error(
+        server_parameter_error::kind::not_readable_directory);
+  }
+  return path;
+}
 }  // namespace
 
-server_parameters_t::server_parameters_t(int argc, char* argv[]) {
+server_parameters::server_parameters(int argc, char* argv[]) {
   if (argc != 3 and argc != 4) {
     throw server_parameter_error(
         server_parameter_error::kind::invalid_argument_count);
   }
-  // Check if port number is OK.
   port_num = parse_port_num(argc == 4 ? std::string_view(argv[3])
                                       : std::string_view{});
-
-  path = argv[1];
-  if (not std::filesystem::is_directory(path)) {
-    throw server_parameter_error(
-        server_parameter_error::kind::invalid_directory);
-  }
-  // Let this natively throw std::filesystem::filesystem_error on permissions
-  // failure.
-  std::filesystem::directory_iterator dir_check(path);
-  // Instead of:
-  // if (faccessat(AT_FDCWD, argv[1], R_OK, AT_EACCESS) != 0) { syserr(); }
-
+  path = validate_path(argv[1]);
   correlated_servers = parse_correlated_servers(argv[2]);
 }

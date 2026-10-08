@@ -1,31 +1,11 @@
-#include <signal.h>
-#include <unistd.h>
+#include "server.hpp"
 
-#include <algorithm>
-#include <cstdio>
-#include <cstring>
-#include <filesystem>
+#include <sys/socket.h>
+
 #include <fstream>
-#include <iostream>
-#include <regex>
-#include <unordered_map>
-#include <unordered_set>
 
-#include "err.h"
-#include "exceptions.hpp"
-#include "parameters.hpp"
-
-// HTTP status codes.
-enum class status_code {
-  OK = 200,
-  FOUND = 302,
-  BAD_REQUEST = 400,
-  NOT_FOUND = 404,
-  INTERNAL_SERVER_ERROR = 500,
-  NOT_IMPLEMENTED = 501
-};
-
-static constexpr std::string_view code_string_view(status_code status) {
+constexpr std::string_view server::code_string_view(
+    server::status_code status) {
   switch (status) {
     case status_code::OK:
       return "OK";
@@ -44,177 +24,12 @@ static constexpr std::string_view code_string_view(status_code status) {
   }
 }
 
-// Timeouts for connection with client.
-constexpr int RECV_TIMEOUT = 3600, SEND_TIMEOUT = 3600;
-// Max number of clients in queue.
-constexpr int BACKLOG = 20;
-// Used for recv().
-constexpr size_t READ_BUFSIZE = 4000;
-// Used for send() and read from file also.
-constexpr size_t SEND_BUFSIZE = 4000;
-
-// Count of US-ASCII.
-constexpr int ASCII = 128;
-// Based on `token` regex from RFC.
-std::vector<bool> method(ASCII, false);
-std::vector<bool> resource(ASCII, false);
-// From assignment FAQ.
-std::vector<bool> header_name(ASCII, false);
-// I assume `header-field` is every character untill "\r\n" is met.
-
-// Good request-target from assignment problem statement.
-std::regex good_resource("[-./[:alnum:]]+");
-
-// Headers which cannot be repeated in the request.
-std::unordered_set<std::string> one_time_headers;
-
-// Helper function for prepare_to_parse().
-// `reg` is the regex of type [charset] which defines which ascii characters are
-// ok. `mp` is then used for matching regexes of type [charset]*
-void fill_ascii_map(const std::regex& reg, std::vector<bool>& mp) {
-  for (uint8_t c = 0; c < ASCII; ++c)
-    mp[c] = std::regex_match(std::string(1, (char)c), reg);
-}
-
-// Creates ascii_maps to facilitate parsing,
-// fills out status message and headers to be encountered one time maps.
-void prepare_for_exchange() {
-  fill_ascii_map(std::regex("[-!#$%&'*+.^_`|~[:alnum:]]"), method);
-  // Assume that resource can be any not white space character.
-  fill_ascii_map(std::regex("[\\S]"), resource);
-  fill_ascii_map(std::regex("[-_[:alnum:]]"), header_name);
-
-  std::vector<std::string> one_timers{"connection", "content-type",
-                                      "content-length", "server"};
-  for (auto& s : one_timers) one_time_headers.insert(s);
-}
-
-// Wraps recv(). Receives data into the string `str`,
-// prints an error message if needed.
-ssize_t receive_data(int sockfd, std::string& str) {
-  char buffer[READ_BUFSIZE];
-  ssize_t len = recv(sockfd, buffer, sizeof buffer, 0);
-  if (len < 0) perror("Reading from client socket.");
-  str = std::string(buffer, len);
-  return len;
-}
-
-// Helper function for parse_request_line(). Refreshes the string if needed.
-bool update_if_needed(int sockfd, std::string& str, size_t& i) {
-  if (i >= str.size()) {
-    if (receive_data(sockfd, str) <= 0) return false;
-    i = 0;
-  }
-  return true;
-}
-
-// Uses ascii map (`charset`) to parse `str` from i,
-// extracting characters that pass into `res`.
-// Exits on the first nonpassing character.
-// If no characters extracted also returns not success (false).
-bool match_charset(int sockfd, std::string& str, size_t& i,
-                   const std::vector<bool>& charset, std::string& res) {
-  size_t prev_i = i;
-  while (0 <= str[i] && (unsigned)str[i] < ASCII && charset[str[i]]) {
-    try {
-      res.push_back(str[i++]);
-    } catch (std::exception& e) {
-      return false;
-    }
-    if (!update_if_needed(sockfd, str, i)) return false;
-  }
-  return prev_i != i;
-}
-
-// Matches `seq` in str[i:].
-bool match_seq(int sockfd, std::string& str, size_t& i,
-               const std::string& seq) {
-  for (char c : seq) {
-    if (str[i++] != c || !update_if_needed(sockfd, str, i)) return false;
-  }
-  return true;
-}
-
-// Parses the request-line. In case it's not correct returns `false`.
-bool parse_request_line(int sockfd, std::string& str, size_t& i,
-                        std::string& method_str, std::string& resource_str) {
-  if (!update_if_needed(sockfd, str, i)) return false;
-  if (!match_charset(sockfd, str, i, method, method_str)) return false;
-  if (!match_seq(sockfd, str, i, " /")) return false;
-  resource_str = "/";
-  size_t previ = i;
-  // Resource name can be empty.
-  if (!match_charset(sockfd, str, i, resource, resource_str) && previ != i)
-    return false;
-  if (!match_seq(sockfd, str, i, " HTTP/1.1\r\n")) return false;
-  return true;
-}
-
-// Parses headers. In case they aren't correct or
-// there is a content-length header with a positive value returns `false`.
-bool parse_headers(int sockfd, std::string& str, size_t& i,
-                   bool& close_connection) {
-  std::unordered_set<std::string> found_one_timers;
-  while (true) {
-    // Match the header name.
-    std::string header_str, header_arg;
-    size_t prev_i = i;
-    if (!match_charset(sockfd, str, i, header_name, header_str)) {
-      if (prev_i == i) {
-        if (str[i++] != '\r' || !update_if_needed(sockfd, str, i)) return false;
-        if (str[i++] != '\n') return false;
-        break;
-      }
-      return false;
-    }
-
-    // Check if this header name was met previously in the request.
-    std::transform(header_str.begin(), header_str.end(), header_str.begin(),
-                   ::tolower);
-    if (one_time_headers.find(header_str) != one_time_headers.end()) {
-      if (found_one_timers.find(header_str) != one_time_headers.end())
-        return false;
-      else
-        found_one_timers.insert(header_str);
-    }
-
-    // Match ":".
-    if (str[i++] != ':' || !update_if_needed(sockfd, str, i)) return false;
-    while (str[i] == '\t' || str[i] == ' ') {
-      ++i;
-      if (!update_if_needed(sockfd, str, i)) return false;
-    }
-
-    // Match until "\r\n" is met.
-    bool CRmet = false;
-    while (str[i] != '\n' || not CRmet) {
-      CRmet = str[i] == '\r';
-      header_arg.push_back(str[i++]);
-      if (!update_if_needed(sockfd, str, i)) return false;
-    }
-    i++;
-    if (!update_if_needed(sockfd, str, i)) return false;
-    header_arg.pop_back();  // pop '\r'
-
-    // OWS is [ \t]
-    auto j = header_arg.find_last_not_of(" \t");
-    if (j != std::string::npos) header_arg = header_arg.substr(0, j + 1);
-
-    if (header_str == "connection") close_connection = header_arg == "close";
-
-    if (header_str == "content-length") {
-      if (header_arg != "0") return false;
-    }
-  }
-
-  return true;
-}
-
-bool full_send(int sockfd, const char* s, size_t size) {
+bool server::full_send(socket_wrapper const& client, std::string_view s) {
   size_t sent = 0;
   ssize_t length;
   do {
-    if (-1 == (length = send(sockfd, s + sent, size - sent, MSG_NOSIGNAL))) {
+    if (-1 == (length = send(client.get(), s.data() + sent, s.size() - sent,
+                             MSG_NOSIGNAL))) {
       if (errno == EINTR) {
         // If interrupted by a signal, try again.
         continue;
@@ -223,13 +38,12 @@ bool full_send(int sockfd, const char* s, size_t size) {
       return false;
     }
     sent += length;
-  } while (sent < size);
+  } while (sent < s.size());
   return true;
 }
 
-// Sends status with len content-length and additional headers. No message.
-bool send_status(int sockfd, status_code status, size_t len,
-                 const std::string& additional_headers) {
+bool server::send_status(socket_wrapper const& client, status_code status,
+                         size_t len, const std::string& additional_headers) {
   // Could also compute expected length for s.reserve to preallocate.
   std::string s("HTTP/1.1 ");
   s.append(std::to_string(static_cast<int>(status)))
@@ -240,47 +54,25 @@ bool send_status(int sockfd, status_code status, size_t len,
       .append("\r\n")
       .append(additional_headers)
       .append("\r\n");
-  return full_send(sockfd, s.c_str(), s.size());
+  return full_send(client, s);
 }
 
-// Validates if path doesn't go outside the scope and if contains good
-// characters. Trims the path of "/" in the beginning.
-bool path_is_valid(std::string& path) {
-  int diff;
-  size_t pos, i;
-  diff = pos = i = 0;
-  if (path.back() == '/') return false;
-  for (; i < path.size() && path[i] == '/'; ++i) {
-  }
-  path = path.substr(i);
-  for (size_t i = path.find('/', pos); i != std::string::npos;
-       i = path.find('/', pos)) {
-    if (i == pos) {
-      ++pos;
-      continue;
-    }
-    diff += (path.compare(pos, i - pos, "..") == 0 ? -1 : 1);
-    if (diff < 0) return false;
-    pos = i + 1;
-  }
-  return std::regex_match(path, good_resource);
-}
-
-// Transfers characters from ifs to socket using buffer of SEND_BUFSIZE size.
-bool send_file(std::ifstream& ifs, size_t sz, int sockfd) {
-  char buffer[SEND_BUFSIZE];
+bool server::send_file(socket_wrapper const& client, std::ifstream& ifs,
+                       size_t sz) {
+  std::array<char, 4000> buffer;
   size_t was_read = 0;
   do {
     size_t was_read_locally = 0;
     try {
-      ifs.read(buffer, sizeof buffer);
+      ifs.read(buffer.data(), buffer.size());
     } catch (std::exception& e) {
       perror(e.what());
       return false;
     }
     size_t delta = ifs.gcount();
 
-    if (not full_send(sockfd, buffer + was_read_locally, delta)) {
+    if (not full_send(client, std::string_view(buffer.data() + was_read_locally,
+                                               delta))) {
       return false;
     }
     was_read_locally += delta;
@@ -290,137 +82,105 @@ bool send_file(std::ifstream& ifs, size_t sz, int sockfd) {
   return not ifs.bad();
 }
 
-// as_read_res is request-target as read from the request.
-bool process_request(
-    int sockfd, const std::string& method_str, const std::string& as_read_res,
-    bool close_connection, const std::string& path,
-    const std::unordered_map<std::string, address_t>& addresses) {
-  std::string addit_header = close_connection ? "connection: close\r\n" : "";
-  std::string resource_str{as_read_res};
-  bool valid_path = path_is_valid(resource_str);
-  bool opened_successfully = true;
-  if (valid_path) {
-    resource_str = path + resource_str;
-    size_t len = 0;
-    try {
-      len = std::filesystem::file_size(resource_str);
-    } catch (std::filesystem::filesystem_error& e) {
-      opened_successfully = false;
+bool server::find_and_send(socket_wrapper const& client,
+                           std::string const& method_str,
+                           std::filesystem::path const& resource,
+                           std::string const& additional_headers) {
+  std::filesystem::path resource_path = params.get_path() / resource;
+  size_t len = std::filesystem::file_size(resource_path);
+  std::ifstream res_ifs(resource_path);
+  if (res_ifs.is_open()) {
+    if (not send_status(client, status_code::OK, len, additional_headers)) {
+      return false;
     }
-    std::ifstream res_ifs(resource_str);
-    if ((opened_successfully = (opened_successfully && res_ifs.is_open()))) {
-      if (!send_status(sockfd, status_code::OK, len, addit_header))
-        return false;
-      if (method_str == "HEAD") return true;
-      return send_file(res_ifs, len, sockfd);
-    }
+    if (method_str == "HEAD") return true;
+    return send_file(client, res_ifs, len);
   }
-
-  if (not valid_path || not opened_successfully) {
-    // Assume that if ends at "/" then same as wasn't found.
-    // Correlated servers.
-    auto it = addresses.find(as_read_res);
-    if (it != addresses.end()) {
-      auto& [server, port] = it->second;
-      std::string address = "http://" + server + ":" + port + as_read_res;
-      if (!send_status(sockfd, status_code::FOUND, 0,
-                       "location: " + address + "\r\n" + addit_header))
-        return false;
-      return true;
-    }
-  }
-
-  if (!send_status(sockfd, status_code::NOT_FOUND, 0, addit_header))
-    return false;
-  return true;
+  return false;
 }
 
-// Once connected to client, this function can exchange http messages with it.
-void talk_to_client(
-    int sockfd, const std::string& path,
-    const std::unordered_map<std::string, address_t>& addresses) {
+bool server::process_request(socket_wrapper const& client,
+                             const std::string& method_str,
+                             const std::string& resource,
+                             bool close_connection) {
+  std::string additional_header =
+      close_connection ? "connection: close\r\n" : "";
+  std::filesystem::path resource_path{resource};
+  if (auto valid_path = parser_.validate_path(resource_path)) {
+    bool can_try_locally = *(valid_path->lexically_normal().begin()) != "..";
+    if (can_try_locally) {
+      try {
+        return find_and_send(client, method_str, valid_path.value(),
+                             additional_header);
+      } catch (std::filesystem::filesystem_error& e) {
+      }
+    }
+    // Correlated servers.
+    auto it = params.get_correlated_servers().find(resource);
+    if (it != params.get_correlated_servers().end()) {
+      auto& [server, port] = it->second;
+      std::string additional_headers("location: ");
+      additional_headers.append("http://")
+          .append(server)
+          .append(":")
+          .append(port)
+          .append(resource)
+          .append("\r\n")
+          .append(additional_header);
+      return send_status(client, status_code::FOUND, 0, additional_headers);
+    }
+    return send_status(client, status_code::NOT_FOUND, 0, additional_header);
+  }
+  send_status(client, status_code::BAD_REQUEST, 0, "connection: close\r\n");
+  return false;
+}
+
+// Once connected to client, exchange http messages with it.
+void server::talk_to_client(socket_wrapper&& client) {
   std::string str;
   size_t i = 0;
   bool close_connection = false;
   while (not close_connection) {
     std::string method_str, resource_str;
-    if (!parse_request_line(sockfd, str, i, method_str, resource_str)) {
-      send_status(sockfd, status_code::BAD_REQUEST, 0, "connection: close\r\n");
+    if (not parser_.parse_request_line(client, str, i, method_str,
+                                       resource_str)) {
+      send_status(client, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
-    bool req = true;
-    if (method_str != "GET" && method_str != "HEAD") {
-      if (!send_status(sockfd, status_code::NOT_IMPLEMENTED, 0, "")) break;
-      req = false;
+    bool request_implemented = true;
+    if (method_str != "GET" and method_str != "HEAD") {
+      if (not send_status(client, status_code::NOT_IMPLEMENTED, 0, "")) break;
+      request_implemented = false;
     }
-    if (!parse_headers(sockfd, str, i, close_connection)) {
-      send_status(sockfd, status_code::BAD_REQUEST, 0, "connection: close\r\n");
+    if (not parser_.parse_headers(client, str, i, close_connection)) {
+      send_status(client, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
 
     // If request is of type GET or HEAD, we can parse it meaningfully.
-    if (req) {
-      if (!process_request(sockfd, method_str, resource_str, close_connection,
-                           path, addresses))
+    if (request_implemented) {
+      if (not process_request(client, method_str, resource_str,
+                              close_connection))
         break;
     }
   }
-  close_err(sockfd);
 }
 
-// Connects to different clients and then talks to them.
-int run_server(int listener_fd, std::string& path,
-               const std::unordered_map<std::string, address_t>& addresses) {
-  if (path.back() != '/') path += "/";
+// Connect to different client and then talk to them.
+int server::run_server() {
+  // FIXME with filesystem::path
+  // if (path.back() != '/') path += "/";
   while (true) {
-    int msg_sockfd;
-    sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof client_addr;
-    if ((msg_sockfd = accept(listener_fd, (sockaddr*)&client_addr,
-                             &client_addr_len)) < 0) {
-      perror("accept");
-      continue;
+    if (auto client_socket = listener_socket.accept_incoming()) {
+      // Whene there is a timeout, program processes it as an error in recv() or
+      // send().
+      if (client_socket->set_timeout(
+              socket_wrapper::timeout_category::receive)) {
+        if (client_socket->set_timeout(
+                socket_wrapper::timeout_category::send)) {
+          talk_to_client(std::move(client_socket.value()));
+        }
+      }
     }
-
-    // Whene there is a timeout, program processes it as an error in recv() or
-    // send().
-    timeval recv_tout, send_tout;
-    recv_tout.tv_sec = RECV_TIMEOUT;
-    recv_tout.tv_usec = 0;
-    if (setsockopt(msg_sockfd, SOL_SOCKET, SO_RCVTIMEO, &recv_tout,
-                   sizeof recv_tout) != 0) {
-      perror("setsockopt recv timeout");
-      close_err(msg_sockfd);
-      continue;
-    }
-
-    send_tout.tv_sec = SEND_TIMEOUT;
-    send_tout.tv_usec = 0;
-    if (setsockopt(msg_sockfd, SOL_SOCKET, SO_SNDTIMEO, &send_tout,
-                   sizeof send_tout) != 0) {
-      perror("setsockopt send timeout");
-      close_err(msg_sockfd);
-      continue;
-    }
-
-    talk_to_client(msg_sockfd, path, addresses);
   }
-}
-
-int main(int argc, char* argv[]) {
-  try {
-    server_parameters_t params(argc, argv);
-    socket sock(params.port_num.c_str());
-    prepare_for_exchange();
-    run_server(sock.sockfd, params.path, params.correlated_servers);
-  } catch (const server_parameter_error& e) {
-    std::cerr << "Startup Error: " << e.what() << '\n';
-    return EXIT_FAILURE;
-  } catch (const std::filesystem::filesystem_error& e) {
-    // Lacking read permissions on the directory.
-    std::cerr << "Filesystem Error: " << e.what() << '\n';
-    return EXIT_FAILURE;
-  }
-
-  return EXIT_SUCCESS;
 }
