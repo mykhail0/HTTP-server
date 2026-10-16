@@ -13,6 +13,9 @@ class parser {
   static constexpr unsigned ASCII = 128;
 
  private:
+  std::string data;
+  size_t read_ptr;
+
   // Based on `token` regex from RFC.
   std::array<bool, ASCII> method{};
   std::array<bool, ASCII> resource{};
@@ -20,7 +23,6 @@ class parser {
   // We assume `header-field` is every character untill "\r\n" is met.
 
   // Good request-target, specified in the README.md.
-  // TODO not sure if this is legal
   std::regex good_resource{"[-./[:alnum:]]+"};
 
   // Headers which cannot be repeated in the request.

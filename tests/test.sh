@@ -49,5 +49,3 @@ if [ "$retval" -ne 0 ]; then
     echo "Test runner failed with exit code $retval." >&2
     exit "$retval"
 fi
-
-# TODO test same port

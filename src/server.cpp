@@ -51,7 +51,7 @@ bool server::send_status(socket_wrapper const& client, status_code status,
       .append(code_string_view(status))
       .append("\r\ncontent-length: ")
       .append(std::to_string(len))
-      .append("\r\n")
+      .append("\r\ncontent-type: application/octet-stream\r\n")
       .append(additional_headers)
       .append("\r\n");
   return full_send(client, s);
@@ -135,7 +135,6 @@ bool server::process_request(socket_wrapper const& client,
   return false;
 }
 
-// Once connected to client, exchange http messages with it.
 void server::talk_to_client(socket_wrapper&& client) {
   std::string str;
   size_t i = 0;
@@ -149,7 +148,9 @@ void server::talk_to_client(socket_wrapper&& client) {
     }
     bool request_implemented = true;
     if (method_str != "GET" and method_str != "HEAD") {
-      if (not send_status(client, status_code::NOT_IMPLEMENTED, 0, "")) break;
+      if (not send_status(client, status_code::NOT_IMPLEMENTED, 0, "")) {
+        break;
+      }
       request_implemented = false;
     }
     if (not parser_.parse_headers(client, str, i, close_connection)) {
@@ -160,19 +161,17 @@ void server::talk_to_client(socket_wrapper&& client) {
     // If request is of type GET or HEAD, we can parse it meaningfully.
     if (request_implemented) {
       if (not process_request(client, method_str, resource_str,
-                              close_connection))
+                              close_connection)) {
         break;
+      }
     }
   }
 }
 
-// Connect to different client and then talk to them.
-int server::run_server() {
-  // FIXME with filesystem::path
-  // if (path.back() != '/') path += "/";
+void server::run_server() {
   while (true) {
     if (auto client_socket = listener_socket.accept_incoming()) {
-      // Whene there is a timeout, program processes it as an error in recv() or
+      // When there is a timeout, program processes it as an error in recv() or
       // send().
       if (client_socket->set_timeout(
               socket_wrapper::timeout_category::receive)) {

@@ -5,7 +5,7 @@ SRCDIR = src
 BUILDDIR = build
 TESTDIR = tests
 
-.PHONY: all clean test
+.PHONY: all clean test grader
 
 all: $(BUILDDIR)/server
 	cp $< serwer
@@ -33,7 +33,13 @@ $(BUILDDIR)/main.o: $(SRCDIR)/main.cpp $(SRCDIR)/parameters.hpp $(SRCDIR)/except
 $(BUILDDIR)/server: $(OBJ)
 	$(CXX) $^ -lstdc++fs -o $@
 
-test: $(BUILDDIR)/server $(TESTDIR)
+.venv: requirements.txt
+	python -m venv $@ && source $@/bin/activate && pip install --requirement $<
+
+grader: tester.py .venv
+	source .venv/bin/activate && ./tester.py simple --dir .
+
+test: $(BUILDDIR)/server $(TESTDIR) grader
 	./tests/test.sh
 
 clean:

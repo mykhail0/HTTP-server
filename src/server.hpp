@@ -46,12 +46,14 @@ class server {
                        const std::string& method_str,
                        const std::string& resource, bool close_connection);
 
+  // Once connected to a client, exchange http messages with it.
   void talk_to_client(socket_wrapper&& client);
 
  public:
   server(socket_wrapper&& sock, server_parameters&& params)
       : listener_socket(std::move(sock)), params(params) {}
-  int run_server();
+  // In a loop connect to a client and talk to them.
+  void run_server();
 };
 
 #endif  // SERVER_H
