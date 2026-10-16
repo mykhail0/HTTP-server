@@ -33,10 +33,7 @@ $(BUILDDIR)/main.o: $(SRCDIR)/main.cpp $(SRCDIR)/parameters.hpp $(SRCDIR)/except
 $(BUILDDIR)/server: $(OBJ)
 	$(CXX) $^ -lstdc++fs -o $@
 
-.venv: requirements.txt
-	python -m venv $@ && source $@/bin/activate && pip install --requirement $<
-
-grader: tester.py .venv
+grader: tester.py
 	source .venv/bin/activate && ./tester.py simple --dir .
 
 test: $(BUILDDIR)/server $(TESTDIR) grader

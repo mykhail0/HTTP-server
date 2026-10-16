@@ -22,7 +22,15 @@ number is optional, equal to 8080 by default. The server listens to incoming
 connections from clients on this port.
 
 A `makefile` file is supplied with the project which produces the `server`
-binary. It also includes a `clean` target.
+binary. It also includes a `clean` target. `test` target tests the server on
+community and official grading tests. Before running `make test` make sure to
+run:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --requirement requirements.txt
+```
 
 ## Specification
 
