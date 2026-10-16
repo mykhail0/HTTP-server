@@ -16,7 +16,10 @@ namespace {
 // print an error message if needed.
 ssize_t receive_data(socket_wrapper const& sockfd, std::string& str) {
   str.resize(4000);
-  ssize_t len = recv(sockfd.get(), str.data(), str.size(), 0);
+  ssize_t len = 0;
+  do {
+    len = recv(sockfd.get(), str.data(), str.size(), 0);
+  } while (len == -1 and errno == EINTR);
   if (len < 0) {
     perror("Reading from client socket.");
     return len;

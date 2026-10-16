@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 if len(sys.argv) != 2:
     print("test_runner.py <port>")
-    exit(0)
+    exit(1)
 
 port = int(sys.argv[1])
 s = None
@@ -333,3 +333,5 @@ print(
     f"{passed} tests passed, {failed} tests failed"
     + (f", {warnings} warnings" if warnings > 0 else "")
 )
+if failed > 0:
+    sys.exit(1)

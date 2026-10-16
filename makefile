@@ -3,6 +3,7 @@ DBGFLAGS = -fstack-protector-strong -g
 OBJ = $(BUILDDIR)/main.o $(BUILDDIR)/server.o $(BUILDDIR)/parameters.o $(BUILDDIR)/socket.o $(BUILDDIR)/parser.o
 SRCDIR = src
 BUILDDIR = build
+TESTDIR = tests
 
 .PHONY: all clean test
 
@@ -25,13 +26,15 @@ $(BUILDDIR)/server.o: $(SRCDIR)/server.cpp $(SRCDIR)/server.hpp $(SRCDIR)/parame
 	mkdir -p $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# TODO dependencies
 $(BUILDDIR)/main.o: $(SRCDIR)/main.cpp $(SRCDIR)/parameters.hpp $(SRCDIR)/exceptions.hpp $(SRCDIR)/server.hpp $(SRCDIR)/socket.hpp
 	mkdir -p $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BUILDDIR)/server: $(OBJ)
 	$(CXX) $^ -lstdc++fs -o $@
+
+test: $(BUILDDIR)/server $(TESTDIR)
+	./tests/test.sh
 
 clean:
 	rm -f serwer

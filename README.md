@@ -1,6 +1,7 @@
 # HTTP-server
 
-Simplistic HTTP-server with limited functionality written in C/C++.
+Simple single threaded single process HTTP server with limited functionality
+serving one client at a time.
 
 ## Introduction
 
@@ -10,7 +11,7 @@ Project is written in C/C++ with the use of socket programming.
 
 ## Running
 
-`server <path-to-directory-with-files> <file-with-correlated-servers> [<server's-port's-number>]`
+`build/server <path-to-directory-with-files> <file-with-correlated-servers> [<server's-port's-number>]`
 
 Argument with directory's path is a required parameter and can use either
 absolute or relative paths. In case of relative paths, the server tries to find

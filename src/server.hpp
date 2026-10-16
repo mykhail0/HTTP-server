@@ -24,14 +24,15 @@ class server {
   static constexpr std::string_view code_string_view(status_code status);
 
   // Try to send the whole of `s` to the `client`.
-  bool full_send(socket_wrapper const& client, std::string_view s);
+  static bool full_send(socket_wrapper const& client, std::string_view s);
 
   // Send status with len content-length and additional headers. No message.
-  bool send_status(socket_wrapper const& client, status_code status, size_t len,
-                   const std::string& additional_headers);
+  static bool send_status(socket_wrapper const& client, status_code status,
+                          size_t len, const std::string& additional_headers);
 
   // Transfer `sz` characters from `ifs` to `client`.
-  bool send_file(socket_wrapper const& client, std::ifstream& ifs, size_t sz);
+  static bool send_file(socket_wrapper const& client, std::ifstream& ifs,
+                        size_t sz);
 
   // Find a given resource and send it with given additional headers.
   // Handles both HEAD and GET specified as `method_str`.
