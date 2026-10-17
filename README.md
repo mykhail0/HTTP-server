@@ -7,7 +7,8 @@ serving one client at a time.
 
 This project implements a narrow subset of HTTP/1.1 specification, with specific
 behavior in case of resources requested by a client which are unavailable.
-Project is written in C/C++ with the use of socket programming.
+Project is written in C/C++ with the use of socket programming. This was an
+assignment for classes on computer networking at the University of Warsaw.
 
 ## Running
 
@@ -31,6 +32,9 @@ python -m venv .venv
 source .venv/bin/activate
 pip install --requirement requirements.txt
 ```
+
+[Grading script](tester.py) was supplied by graders after grading, another
+[testing script](tests/test-runner.py) was written by a fellow student.
 
 ## Specification
 
