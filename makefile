@@ -26,7 +26,7 @@ $(BUILDDIR)/server.o: $(SRCDIR)/server.cpp $(SRCDIR)/server.hpp $(SRCDIR)/parame
 	mkdir -p $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILDDIR)/main.o: $(SRCDIR)/main.cpp $(SRCDIR)/parameters.hpp $(SRCDIR)/exceptions.hpp $(SRCDIR)/server.hpp $(SRCDIR)/socket.hpp
+$(BUILDDIR)/main.o: $(SRCDIR)/main.cpp $(SRCDIR)/parser.hpp $(SRCDIR)/parameters.hpp $(SRCDIR)/exceptions.hpp $(SRCDIR)/server.hpp $(SRCDIR)/socket.hpp
 	mkdir -p $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 

@@ -106,7 +106,7 @@ bool server::process_request(socket_wrapper const& client,
   std::string additional_header =
       close_connection ? "connection: close\r\n" : "";
   std::filesystem::path resource_path{resource};
-  if (auto valid_path = parser_.validate_path(resource_path)) {
+  if (auto valid_path = parser_->validate_path(resource_path)) {
     bool can_try_locally = *(valid_path->lexically_normal().begin()) != "..";
     if (can_try_locally) {
       try {
@@ -135,14 +135,12 @@ bool server::process_request(socket_wrapper const& client,
   return false;
 }
 
-void server::talk_to_client(socket_wrapper&& client) {
-  std::string str;
-  size_t i = 0;
+void server::talk_to_client(socket_wrapper const& client) {
+  parser_.emplace(client);
   bool close_connection = false;
   while (not close_connection) {
     std::string method_str, resource_str;
-    if (not parser_.parse_request_line(client, str, i, method_str,
-                                       resource_str)) {
+    if (not parser_->parse_request_line(method_str, resource_str)) {
       send_status(client, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
@@ -153,7 +151,7 @@ void server::talk_to_client(socket_wrapper&& client) {
       }
       request_implemented = false;
     }
-    if (not parser_.parse_headers(client, str, i, close_connection)) {
+    if (not parser_->parse_headers(close_connection)) {
       send_status(client, status_code::BAD_REQUEST, 0, "connection: close\r\n");
       break;
     }
@@ -177,7 +175,7 @@ void server::run_server() {
               socket_wrapper::timeout_category::receive)) {
         if (client_socket->set_timeout(
                 socket_wrapper::timeout_category::send)) {
-          talk_to_client(std::move(client_socket.value()));
+          talk_to_client(client_socket.value());
         }
       }
     }

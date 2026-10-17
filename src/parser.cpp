@@ -3,28 +3,8 @@
 #include <sys/socket.h>
 
 #include <cstdint>
-#include <unordered_set>
-
-// TODO do i need unordered set?
-// maybe something more ergonomic than update_if_needed callbacks?
 
 namespace {
-// recv() wrapper. Receive data into the string `str`,
-// print an error message if needed.
-ssize_t receive_data(socket_wrapper const& sockfd, std::string& str) {
-  str.resize(4000);
-  ssize_t len = 0;
-  do {
-    len = recv(sockfd.get(), str.data(), str.size(), 0);
-  } while (len == -1 and errno == EINTR);
-  if (len < 0) {
-    perror("Reading from client socket.");
-    return len;
-  }
-  str.resize(len);
-  return len;
-}
-
 // `reg` is the regex of type [charset] which defines which ascii characters are
 // ok. `mp` is then used for matching regexes of type [charset]*
 // In short, makes an array mask based on a regex for good chars.
@@ -33,29 +13,94 @@ void fill_ascii_mask(const std::regex& reg,
   for (uint8_t c = 0; c < parser::ASCII; ++c)
     mask[c] = std::regex_match(std::string(1, static_cast<char>(c)), reg);
 }
-
-// Helper function for parse_request_line(). Refresh the string if needed.
-bool update_if_needed(socket_wrapper const& sockfd, std::string& str,
-                      size_t& i) {
-  if (i >= str.size()) {
-    if (receive_data(sockfd, str) <= 0) return false;
-    i = 0;
-  }
-  return true;
-}
 }  // namespace
 
-parser::parser() {
-  // Create ASCII masks to facilitate parsing.
-  fill_ascii_mask(std::regex("[-!#$%&'*+.^_`|~[:alnum:]]"), method);
-  // Assume that resource can be any not white space character.
-  fill_ascii_mask(std::regex("[\\S]"), resource);
-  fill_ascii_mask(std::regex("[-_[:alnum:]]"), header_name);
+const std::array<bool, parser::ASCII>& parser::method() {
+  static const std::array<bool, parser::ASCII> ans = []() {
+    std::array<bool, parser::ASCII> ans;
+    fill_ascii_mask(std::regex("[-!#$%&'*+.^_`|~[:alnum:]]"), ans);
+    return ans;
+  }();
+  return ans;
+}
+
+const std::array<bool, parser::ASCII>& parser::resource() {
+  static const std::array<bool, parser::ASCII> ans = []() {
+    std::array<bool, parser::ASCII> ans;
+    // Assume that resource can be any not white space character.
+    fill_ascii_mask(std::regex("[\\S]"), ans);
+    return ans;
+  }();
+  return ans;
+}
+
+const std::array<bool, parser::ASCII>& parser::OWS() {
+  static const std::array<bool, parser::ASCII> ans = []() {
+    std::array<bool, parser::ASCII> ans{};
+    ans[' '] = ans['\t'] = true;
+    return ans;
+  }();
+  return ans;
+}
+
+const std::array<bool, parser::ASCII>& parser::header_name() {
+  static const std::array<bool, parser::ASCII> ans = []() {
+    std::array<bool, parser::ASCII> ans;
+    fill_ascii_mask(std::regex("[-_[:alnum:]]"), ans);
+    return ans;
+  }();
+  return ans;
+}
+
+const std::regex& parser::good_resource() {
+  static const std::regex ans = []() {
+    return std::regex{"[-./[:alnum:]]+"};
+  }();
+  return ans;
+}
+
+const std::array<std::string, parser::ONE_TIME_HEADERS>&
+parser::one_time_headers() {
+  static const std::array<std::string, ONE_TIME_HEADERS> ans = []() {
+    return std::array<std::string, ONE_TIME_HEADERS>{
+        "connection", "content-type", "content-length", "server"};
+  }();
+  return ans;
+}
+
+ssize_t parser::socket_stream::receive_data() {
+  read_ptr = 0;
+  data.resize(4000);
+  ssize_t len = 0;
+  do {
+    len = recv(sockfd.get(), data.data(), data.size(), 0);
+  } while (len == -1 and errno == EINTR);
+  if (len < 0) {
+    perror("Reading from client socket.");
+    return len;
+  }
+  data.resize(len);
+  return len;
+}
+
+std::optional<char> parser::socket_stream::peek() {
+  if (read_ptr >= data.size()) {
+    if (receive_data() <= 0) return {};
+  }
+  return data[read_ptr];
+}
+
+std::optional<char> parser::socket_stream::get() {
+  std::optional<char> ans = peek();
+  if (ans) {
+    ++read_ptr;
+  }
+  return ans;
 }
 
 std::optional<std::filesystem::path> parser::validate_path(
     std::string const& path_) {
-  if (path_.front() != '/' or not std::regex_match(path_, good_resource)) {
+  if (path_.front() != '/' or not std::regex_match(path_, good_resource())) {
     return {};
   }
   size_t pos = path_.find_first_not_of('/');
@@ -63,118 +108,112 @@ std::optional<std::filesystem::path> parser::validate_path(
       path_.substr(pos == std::string::npos ? path_.size() : pos));
 }
 
-// Use ASCII mask (`charset`) to parse `str` from `i`,
-// extracting characters that pass into `res`.
-// Exit on the first nonpassing character.
-// If no characters extracted also return no success (false).
-bool parser::match_charset(socket_wrapper const& sockfd, std::string& str,
-                           size_t& i, const std::array<bool, ASCII>& charset,
+bool parser::match_charset(const std::array<bool, ASCII>& charset,
                            std::string& res) {
-  size_t prev_i = i;
-  while (0 <= str[i] and (unsigned) str[i] < ASCII and charset[str[i]]) {
-    try {
-      res.push_back(str[i++]);
-    } catch (std::exception& e) {
+  size_t prev_sz = res.size();
+  while (auto c = sock_stream.peek()) {
+    unsigned char ch = *c;
+    if (ch >= ASCII or not charset[ch]) {
+      break;
+    }
+    res.push_back(*sock_stream.get());
+  }
+  return prev_sz < res.size();
+}
+
+void parser::consume_charset(const std::array<bool, ASCII>& charset) {
+  while (auto c = sock_stream.peek()) {
+    unsigned char ch = *c;
+    if (ch < ASCII and charset[ch]) {
+      sock_stream.get();
+    } else {
+      return;
+    }
+  }
+}
+
+bool parser::match_seq(const std::string& seq) {
+  for (char expected : seq) {
+    if (auto ch = sock_stream.get()) {
+      if (ch.value() != expected) {
+        return false;
+      }
+    } else {
       return false;
     }
-    if (not update_if_needed(sockfd, str, i)) return false;
-  }
-  return prev_i != i;
-}
-
-bool parser::match_seq(socket_wrapper const& sockfd, std::string& str,
-                       size_t& i, const std::string& seq) {
-  for (char c : seq) {
-    if (str[i++] != c or not update_if_needed(sockfd, str, i)) return false;
   }
   return true;
 }
 
-bool parser::parse_request_line(socket_wrapper const& sockfd, std::string& str,
-                                size_t& i, std::string& method_str,
+bool parser::parse_request_line(std::string& method_str,
                                 std::string& resource_str) {
-  if (not update_if_needed(sockfd, str, i)) return false;
-  if (not match_charset(sockfd, str, i, method, method_str)) return false;
-  if (not match_seq(sockfd, str, i, " /")) return false;
-  resource_str = "/";
-  size_t previ = i;
-  // Resource name can be empty.
-  if (not match_charset(sockfd, str, i, resource, resource_str) and previ != i)
+  if (not match_charset(method(), method_str) or not match_seq(" /")) {
     return false;
-  if (not match_seq(sockfd, str, i, " HTTP/1.1\r\n")) return false;
-  return true;
+  }
+  resource_str = "/";
+  // Resource name can be empty.
+  match_charset(resource(), resource_str);
+  return match_seq(" HTTP/1.1\r\n");
 }
 
-bool parser::parse_headers(socket_wrapper const& sockfd, std::string& str,
-                           size_t& i, bool& close_connection) {
-  std::unordered_set<std::string> found_one_timers;
+bool parser::parse_headers(bool& close_connection) {
+  std::array<bool, ONE_TIME_HEADERS> found_one_timers{};
   while (true) {
     // Match the header name.
     std::string header_str, header_arg;
-    size_t prev_i = i;
-    if (not match_charset(sockfd, str, i, header_name, header_str)) {
-      if (prev_i == i) {
-        if (str[i++] != '\r' or not update_if_needed(sockfd, str, i)) {
-          return false;
-        }
-        if (str[i++] != '\n') {
-          return false;
-        }
-        break;
-      }
-      return false;
+    if (not match_charset(header_name(), header_str)) {
+      return header_str.empty() and match_seq("\r\n");
     }
 
-    // Check if this header name was met previously in the request.
-    std::transform(header_str.begin(), header_str.end(), header_str.begin(),
-                   ::tolower);
-    auto end_it = end(one_time_headers);
-    if (std::find(begin(one_time_headers), end_it, header_str) != end_it) {
-      if (found_one_timers.find(header_str) != found_one_timers.end()) {
+    // Standardize the header name.
+    auto header_str_beg_it = begin(header_str);
+    std::transform(header_str_beg_it, end(header_str), header_str_beg_it,
+                   tolower);
+
+    // Check if this header is one of those that can only be encountered once in
+    // a request (specification).
+    auto beg_it = begin(one_time_headers()), end_it = end(one_time_headers());
+    auto header_it = std::find(beg_it, end_it, header_str);
+    if (header_it != end_it) {
+      auto header_ind = std::distance(beg_it, header_it);
+      // If the header encountered, the request is ill-formed.
+      if (found_one_timers[header_ind]) {
         return false;
-      } else {
-        found_one_timers.insert(header_str);
       }
+      found_one_timers[header_ind] = true;
     }
 
-    // Match ":".
-    if (str[i++] != ':' or not update_if_needed(sockfd, str, i)) {
+    if (not match_seq(":")) {
       return false;
     }
-    while (str[i] == '\t' or str[i] == ' ') {
-      ++i;
-      if (not update_if_needed(sockfd, str, i)) {
-        return false;
-      }
-    }
+    consume_charset(OWS());
 
     // Match until "\r\n" is met.
-    bool CRmet = false;
-    while (str[i] != '\n' or not CRmet) {
-      CRmet = str[i] == '\r';
-      header_arg.push_back(str[i++]);
-      if (not update_if_needed(sockfd, str, i)) {
-        return false;
-      }
+    bool CR_met = false;
+    while (sock_stream.peek() and
+           not(CR_met and sock_stream.peek().value() == '\n')) {
+      CR_met = sock_stream.peek().value() == '\r';
+      header_arg.push_back(sock_stream.get().value());
     }
-    ++i;
-    if (not update_if_needed(sockfd, str, i)) {
+    // Stream ended or "\r\n" was met.
+    if (not sock_stream.peek()) {
       return false;
     }
-    header_arg.pop_back();  // pop '\r'
+    // Consume the '\n'.
+    sock_stream.get();
+    // Pop '\r'.
+    header_arg.pop_back();
 
-    // OWS is [ \t]
+    // Trim the OWS from the end of header field.
     auto j = header_arg.find_last_not_of(" \t");
-    if (j != std::string::npos) header_arg = header_arg.substr(0, j + 1);
+    if (j != std::string::npos) {
+      header_arg.resize(j + 1);
+    }
 
-    if (header_str == "connection") close_connection = header_arg == "close";
-
-    if (header_str == "content-length") {
-      if (header_arg != "0") {
-        return false;
-      }
+    if (header_str == "connection") {
+      close_connection = header_arg == "close";
+    } else if (header_str == "content-length" and header_arg != "0") {
+      return false;
     }
   }
-
-  return true;
 }

@@ -9,7 +9,7 @@ class server {
  private:
   socket_wrapper listener_socket;
   server_parameters params;
-  parser parser_;
+  std::optional<parser> parser_;
 
   // HTTP status codes.
   enum class status_code {
@@ -47,7 +47,7 @@ class server {
                        const std::string& resource, bool close_connection);
 
   // Once connected to a client, exchange http messages with it.
-  void talk_to_client(socket_wrapper&& client);
+  void talk_to_client(socket_wrapper const& client);
 
  public:
   server(socket_wrapper&& sock, server_parameters&& params)
